@@ -8,16 +8,18 @@ Simulation of a computer.
 BITS = 8
 
 
-def bitsToArray(bits, size=BITS):
+def bitsToArray(bits):
     """Translates a byte string to a data array"""
+    size = len(bits)
     array = [False] * size
     for k in range(size):
         array[k] = bits[-1 - k] == "1"
     return array
 
 
-def arrayToBits(array, size=BITS):
+def arrayToBits(array):
     """Translates a data array to a byte string"""
+    size = len(array)
     bits = ""
     for k in range(size):
         bits += "1" if array[-1 - k] else "0"
@@ -32,15 +34,14 @@ def arrayToInt(array):
     return integer
 
 
-def fitArray(array, size):
-    """Creates an array of a specific size"""
-    newArray = [False] * size
-    sizeArray = len(array)
-    delta = sizeArray - size
-    for k in range(size):
-        if k + delta >= 0:
-            newArray[k] = array[k + delta]
-    return newArray
+def fitArray(array, newArray, default=False):
+    """Fits an array into another one"""
+    size = len(array)
+    for k in range(len(newArray)):
+        if k < size:
+            newArray[k] = array[k]
+        else:
+            newArray[k] = default
 
 
 class Register:
@@ -52,130 +53,146 @@ class Register:
         self.outBUS = outBUS
         self.size = size
 
-    def registerIn(self):
-        self.data = fitArray(self.inBUS, self.size)
+    def In(self):
+        fitArray(self.inBUS, self.data)
 
-    def registerOut(self):
-        self.outBUS = fitArray(self.data, len(self.outBUS))
+    def Out(self):
+        fitArray(self.data, self.outBUS)
 
 
-class ProgramCounter:
+class ProgramCounter(Register):
     """Count the number of steps the program has executed"""
 
     def __init__(self, BUS, size=(BITS // 2)):
-        self.count = [False] * size
-        self.input = Register(BUS, self.data, size)
-        self.output = Register(self.data, BUS, size)
-        self.size = size
+        Register.__init__(self, BUS, BUS, size)
 
-    def counterOut(self):
-        self.output.registerIn()  # count -> register
-        self.output.registerOut()  # register -> BUS
-
-    def counterIn(self):
-        self.input.registerIn()  # BUS -> register
-        self.input.registerOut()  # register -> count
-
-    def counterStep(self):
+    def Enable(self):  # Increment counter
         carry, k = True, 0
         while k < self.size and carry:
-            diff = carry == self.count[k]
-            self.count[k], carry = not diff, diff  # XOR, NXOR
+            diff = carry == self.data[k]
+            self.data[k], carry = not diff, diff  # XOR, NXOR
             k += 1
 
 
-class InstructionRegister:  # TODO
+class InstructionRegister(Register):
 
-    def __init__(self, BUS):
-        self.data = [False] * BITS
+    def __init__(self, BUS, instr, instrSize,
+                 sizeData=BITS, sizeAddress=(BITS // 2)):
         self.BUS = BUS
+        self.instr = instr
+        Register.__init__(self, BUS, BUS, sizeData)
+        self.sizeAddress = sizeAddress
+        self.instrSize = instrSize
 
-    def setAddress(self, address):
-        self.data = address
+    def Out(self):
+        fitArray(self.data[:self.sizeAddress], self.outBUS)
 
-    def getData(self):
-        return self.data
+    def setFonctions(self, fonct):
+        self.fonct = fonct
+
+    def update(self):
+        for k in range(self.instrSize):
+            operation = arrayToInt(self.data[-self.sizeAddress:])
+            for i in self.instr[8 * operation + k]:
+                self.fonct[i]()
 
 
-class RAM:
+class RAM(Register):
     """Storage and recovery of "size" data arrays"""
 
-    def __init__(self, BUS, size=(BITS // 2)):
-        self.memory = [[False] * BITS for k in range(2**size)]
-        self.address = [False] * size
-        self.data = [False] * BITS
-        self.input = Register(BUS, self.address, size)
-        self.output = Register(self.data, BUS, size)
-        self.size = size
+    def __init__(self, BUS, sizeData=BITS, sizeAddress=(BITS // 2)):
+        self.memory = [[False] * sizeData for _ in range(2**sizeAddress)]
+        self.address = [False] * sizeAddress
+        Register.__init__(self, BUS, BUS, sizeData)
 
-    def memoryIn(self):
-        self.input.registerIn()  # BUS -> register
-        self.input.registerOut()  # register -> address
+    def MemaIn(self):  # Sets address
+        fitArray(self.outBUS, self.address)
+        self.data = self.memory[arrayToInt(self.address)]
 
-    def RAMout(self):
-        self.output.registerIn()  # data -> register
-        self.output.registerOut()  # register -> BUS
+    def setData(self, address, data):  # Sets address
+        self.memory[arrayToInt(address)] = data
 
 
-class ALU:
+class ALU(Register):
     """Arithmetic and logic unit: Adds or subtracts its inputs"""
 
-    def __init__(self, BUS, inputA, inputB):
-        # "inputA" and "inputB" are registers
-        self.inputA = inputA
-        self.inputB = inputB
+    def __init__(self, BUS, size=BITS):
+        self.A = Register(BUS, BUS, size)
+        self.B = Register(BUS, BUS, size)
+        Register.__init__(self, BUS, BUS, size)
         self.BUS = BUS
+        self.size = size
 
-    def getData(self, substract=False):
-        dataA = self.inputA.getData()
-        dataB = self.inputB.getData()
-        output = [None] * BITS
+    def Out(self, substract=False):
         carry = substract
-        for k in range(BITS):
-            bitA = dataA[k]
-            bitB = substract != dataB[k]  # XOR gate
-            output[k] = (bitA != bitB) != carry
+        for k in range(self.size):
+            bitA = self.A.data[k]
+            bitB = substract != self.B.data[k]  # XOR gate
+            self.data[k] = (bitA != bitB) != carry
             carry = (carry and bitA) or (carry and bitB) or (bitA and bitB)
-        return output
+        fitArray(self.data, self.BUS)
 
 
-if __name__ == "__main__":  # Example code (incomplete)
-    # Set-up everything
-    """
-    registerA = Register()
-    registerB = Register()
-    counter = ProgramCounter()
-    alu = ALU(registerA, registerB)
-    ram = RAM()
-    BUS = [None] * BITS  # Initialise BUS
-    counter.loadData(bitsToArray("0000"))  # Set counter to step 0
-    # Initialise RAM with 13 and 6 at address 14 and 15
-    ram.setData(bitsToArray("00001101"), bitsToArray("1110"))
-    ram.setData(bitsToArray("00000110"), bitsToArray("1111"))
+class Clock:
+    def __init__(self, halt=False):
+        self.halt = halt
 
-    while True:
-        # CO MI RO (Counter Out -> Memory In -> RAM Out)
-        BUS = ram.getData(counter.getData())
-        # II (Instruction register In)
-        BUS = ram.getData(counter.getData())
-        counter.nextStep()
+    def Halt(self):
+        self.halt = True
 
-    # Step 0: Writes "13" from RAM to the BUS
-    BUS = ram.getData(bitsToArray("1110"))
-    counter.nextStep()
-    # Step 1: Load "13" to "registerA"
-    registerA.loadData(BUS)  # a = 13
-    counter.nextStep()
-    # Step 2: Writes "6" from RAM to the BUS
-    BUS = ram.getData(bitsToArray("1111"))
-    counter.nextStep()
-    # Step 3: Load "6" to "registerB"
-    registerB.loadData(BUS)  # b = 6
-    counter.nextStep()
-    # Step 4: Writes a-b = 7 ("00000111") to the BUS
-    BUS = alu.getData(True)  # "True" for subtractions
-    counter.nextStep()
-    # Output
-    print(arrayToBits(BUS))  # Prints BUS content
-    print(arrayToBits(counter.getData()))  # Prints the number of steps
-    """
+    def running(self):
+        return not self.halt
+
+
+class Output(Register):
+    def In(self):
+        fitArray(self.inBUS, self.data)
+        print(arrayToInt(self.data))
+
+
+if __name__ == "__main__":  # Example code
+    # Define a set of instructions (Carefull with in/out priority)
+    instr = [[]] * 2**8  # 1*CF 4*Op 3*Step
+    for k in range(0, 249, 8):  # 00000XXX -> 11111XXX
+        instr[k] = [13, 1]  # CO MI
+        instr[k + 1] = [3, 5, 12]  # RO II CE
+        operation = (k // 8) % 16
+        if operation == 1:  # X0001XXX (LDA)
+            instr[k + 2] = [4, 1]  # IO MI
+            instr[k + 3] = [3, 6]  # RO AI
+        elif operation == 2:  # X0010XXX (ADD)
+            instr[k + 2] = [4, 1]  # IO MI
+            instr[k + 3] = [3, 10]  # RO BI
+            instr[k + 4] = [8, 6]  # SO AI
+        elif operation == 14:  # X1110XXX (OUT)
+            instr[k + 2] = [7, 11]  # AO OI
+        elif operation == 15:  # X1111XXX (HLT)
+            instr[k + 2] = [0]  # HLT
+
+    # Set-up components
+    BUS = [False] * BITS  # Initialize BUS
+    clk = Clock()
+    out = Output(BUS, BUS)
+    cnt = ProgramCounter(BUS)
+    alu = ALU(BUS)
+    ram = RAM(BUS)
+    ins = InstructionRegister(BUS, instr, 5)  # 5 < 8 = 2**3
+    ins.setFonctions([
+        clk.Halt, ram.MemaIn, ram.In, ram.Out,
+        ins.Out, ins.In, alu.A.In, alu.A.Out,
+        alu.Out, lambda: alu.Out(True), alu.B.In, out.In,
+        cnt.Enable, cnt.Out, cnt.In, lambda: None])
+
+    # Initialize RAM with addition code
+    ram.setData(bitsToArray("0000"), bitsToArray("00011110"))  # LDA 14
+    ram.setData(bitsToArray("0001"), bitsToArray("00101111"))  # ADD 15
+    ram.setData(bitsToArray("0010"), bitsToArray("11100000"))  # OUT
+    ram.setData(bitsToArray("0011"), bitsToArray("11110000"))  # HLT
+
+    # Initialize RAM with 13 and 6 at address 14 and 15
+    ram.setData(bitsToArray("1110"), bitsToArray("00001101"))
+    ram.setData(bitsToArray("1111"), bitsToArray("00000110"))
+
+    # Run computer
+    while clk.running():
+        ins.update()
