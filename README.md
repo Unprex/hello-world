@@ -9,3 +9,4 @@ That's why I've decided to create this page.
 
 ### Small Projects:
 - [Computer.py](small-projects/computer/README.md)
+- [Caml Light](small-projects/camllight/README.md)
