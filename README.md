@@ -9,3 +9,4 @@ That's why I've decided to create this page.
 
 ### Small Projects:
 - [Computer.py](small-projects/computer/README.md)
+- [WebGPU for Python](small-projects/webgpu/README.md)
