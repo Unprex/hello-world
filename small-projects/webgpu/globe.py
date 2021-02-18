@@ -1,9 +1,9 @@
 import sys
 import math
-import time
 from struct import pack
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QTimer, QElapsedTimer
 from PIL import Image
 
 import wgpu
@@ -14,10 +14,9 @@ from pyshader import python2shader
 from pyshader import RES_INPUT, RES_OUTPUT, RES_UNIFORM, RES_TEXTURE
 from pyshader import vec2, vec3, vec4, ivec2, i32
 
-img = Image.open("WorldTest.png").convert("RGBA")
-
-FPS = 240
-numVertices = 6
+# Limited by QTimer (min = 1ms/frame)
+FPS = 60
+mapTexture = "WorldTest.png"
 
 
 # %% Shaders
@@ -27,6 +26,7 @@ def vertex_shader(
     pos: (RES_OUTPUT, "Position", vec4),  # noqa
     uv: (RES_OUTPUT, 0, vec2),
 ):
+    # 6 vertices. TODO: Update with uniform to keep ratio
     positions = [vec2(1, 1), vec2(-1, 1), vec2(-1, -1),
                  vec2(1, 1), vec2(1, -1), vec2(-1, -1)]
     p = positions[index]
@@ -41,61 +41,71 @@ def fragment_shader(
     in_rot: (RES_UNIFORM, 1, vec4),
     out_color: (RES_OUTPUT, 0, vec4),
 ):
+    # Distance squared to center of circle
     d2 = in_uv.x**2 + in_uv.y**2
+
+    # Check if outside of map boundary
     if d2 > 1.0:
-        # density = math.exp(50.0 * (1.0 - r))
+        # density = math.exp(50.0 * (1.0 - r))  # Display atmosphere
         out_color = vec4(0, 0, 0, 0)
     else:
-        c = math.sqrt(1.0 - d2)
-
+        # Camera rotation
         in_uv_rot = vec2(
             in_uv.x * math.cos(in_rot.z) + in_uv.y * math.sin(in_rot.z),
             in_uv.y * math.cos(in_rot.z) - in_uv.x * math.sin(in_rot.z)
         )
 
+        # Map transformation
+        c = math.sqrt(1.0 - d2)
         lam = in_rot.x + math.atan2(in_uv_rot.x, c * math.cos(in_rot.y)
                                     - in_uv_rot.y * math.sin(in_rot.y))
         phi = math.asin(c * math.sin(in_rot.y)
                         + in_uv_rot.y * math.cos(in_rot.y))
 
+        # Get coordinates of color on texture
         uvCoord = vec2((lam / math.pi + 1.0) % 2.0 - 1.0, 2.0 * phi / math.pi)
-
         texCoords = ivec2((uvCoord + vec2(1, -1)) * vec2(800, -400))
 
-        pos = vec3(
+        # Get normal in globe reference frame
+        norm = math.normalize(vec3(
             math.cos(phi) * math.cos(lam),
             math.cos(phi) * math.sin(lam),
             math.sin(phi)
-        )
+        ))
 
+        # Set light direction
         light = vec3(math.sin(in_rot.w), math.cos(in_rot.w), -.1 * in_rot.z)
-        intensity = math.normalize(pos) @ math.normalize(light)
+        # Get light intensity
+        intensity = norm @ math.normalize(light)
+        # Set ambient lighting
+        ambient = .1
+        # Check if in shadow
         if intensity < 0.0:
-            color = vec4(.01, .01, .01, 1)
+            shading = vec4(ambient, ambient, ambient, 1)
         else:
-            intensity += .01
-            color = vec4(intensity, intensity, intensity, 1)
+            intensity += ambient
+            shading = vec4(intensity, intensity, intensity, 1)
 
-        out_color = in_tex.read(texCoords).zyxw * color  # noqa
+        # Get texture color and apply shading
+        out_color = in_tex.read(texCoords).zyxw * shading  # noqa
 
 
 # %% The wgpu calls
-def main(canvas):
+def get_draw_function(canvas, img):
     """Regular function to setup a viz on the given canvas."""
     # like Graphics driver (search for compatible)
     adapter = wgpu.request_adapter(  # "high-performance" or "low-power"
         canvas=canvas, power_preference="high-performance")
     # Create an instance of the previous adapter
     device = adapter.request_device(extensions=[], limits={})
-    return _main(canvas, device)
 
-
-def _main(canvas, device):
+    # Create texture object
     texture = device.create_texture(
         size=(img.width, img.height, 1),
         format=wgpu.TextureFormat.bgra8unorm_srgb,
         usage=wgpu.TextureUsage.SAMPLED | wgpu.TextureUsage.COPY_DST
     )
+    # Update texture with pixels
     device.default_queue.write_texture(
         destination={"texture": texture},
         data=img.tobytes(),
@@ -103,6 +113,7 @@ def _main(canvas, device):
         size=(img.width, img.height, 1)
     )
 
+    # Create 16 byte uniform buffer (updated in draw_frame)
     rotation = device.create_buffer(
         size=16,
         usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST
@@ -183,12 +194,13 @@ def _main(canvas, device):
         }
     )
 
-    def draw_frame(i):
-        f1 = -i % (2 * math.pi)
-        f2 = 0.5 * math.sin(0.4 * i % (2 * math.pi))
-        f3 = -0.5 * math.cos(0.4 * i % (2 * math.pi))
-        f4 = (i * 0.5) % (2 * math.pi)
+    def draw_frame(t):
+        f1 = -t % (2 * math.pi)
+        f2 = 0.5 * math.sin(0.4 * t % (2 * math.pi))
+        f3 = -0.5 * math.cos(0.4 * t % (2 * math.pi))
+        f4 = (t * 0.5) % (2 * math.pi)
 
+        # Update 16 byte uniform buffer
         device.default_queue.write_buffer(
             rotation, 0,
             pack("f", f1) + pack("f", f2) + pack("f", f3) + pack("f", f4)
@@ -212,7 +224,8 @@ def _main(canvas, device):
             # last 2 elements not used
             render_pass.set_bind_group(0, bind_group, [], 0, 999999)
 
-            render_pass.draw(numVertices)
+            # Draw 6 vertices (two triangles)
+            render_pass.draw(6)
             render_pass.end_pass()
 
             device.default_queue.submit([command_encoder.finish()])
@@ -220,20 +233,54 @@ def _main(canvas, device):
     return draw_frame
 
 
-if __name__ == "__main__":
+class MainWindow(WgpuCanvas):
+    def __init__(self, parent=None, title=None, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        self.setWindowTitle(title)
+
+        # Load Map texture
+        img = Image.open(mapTexture).convert("RGBA")
+
+        # Create the WebGPU draw function and initialize GPU
+        self.drawFunction = get_draw_function(self, img)
+
+        self.request_draw(self.mainloop)  # Updates on resize / redraw
+
+        # Set timer to update every frame
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.mainloop)
+        self.timer.start(math.floor(1000 / FPS))
+
+        self.timing = QElapsedTimer()
+        self.timing.start()
+        self.oldTime = 0
+
+    def mainloop(self):
+        """ Main update loop """
+
+        if self.is_closed():
+            self.timer.stop()
+            return
+
+        # Get current time since launch
+        t = self.timing.elapsed() / 1000
+
+        # Call draw fonction with the time
+        self.drawFunction(t)
+
+        # Display FPS
+        if t - self.oldTime > 0:
+            print(round(1 / (t - self.oldTime), 2), "FPS")
+        self.oldTime = t
+
+
+def main():
     app = QApplication(sys.argv)
-    canvas = WgpuCanvas(title="wgpu with Qt")
-    canvas.resize(800, 800)
-    draw_frame = main(canvas)
+    gui = MainWindow(title="wgpu with Qt")
+    gui.resize(800, 800)
+    gui.show()
+    sys.exit(app.exec_())
 
-    while not canvas.is_closed():
-        start = time.time()
-        app.processEvents()
 
-        canvas.request_draw(lambda: draw_frame(start))
-
-        # The slowest thing in the loop is time.sleep
-        time.sleep(max(1 / FPS - time.time() + start, 0))
-        print(round(1 / (time.time() - start), 2), "FPS", start)
-
-    app.exit()
+if __name__ == "__main__":
+    main()
