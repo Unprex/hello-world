@@ -1,11 +1,7 @@
 # hello-world
 
-My first repository on GitHub.
+Welcome to my first GitHub repository.
 
-Hello,
-I've been programming in my spare time for more than five years now.
-Despite that, I have nearly ever done any collaborations.
-That's why I've decided to create this page.
+It is used as a collection of small projets/tests done during my free time.
 
-### Small Projects:
-- [Computer.py](small-projects/computer/README.md)
+- [Python Computer Emulator](small-projects/computer)
